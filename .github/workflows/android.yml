@@ -38,16 +38,23 @@ jobs:
           java-version: '17'
 
       # 3) Android SDK 설치 + 라이선스 수락
-      - name: Set up Android SDK
+      - name: Set up Android SDK (no broken pipe)
         shell: bash
         run: |
+          set -e
           mkdir -p "$ANDROID_SDK_ROOT"
-          curl -sLo cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          curl -sLo /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          unzip -q cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses
+
+          # 필요한 패키지 설치 (파이프 종료로 인한 오류는 무시)
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
+            --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" || true
+
+          # 라이선스 일괄 수락 (출력은 버퍼 줄이기 위해 버림, 파이프 종료 무시)
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null || true
+
           echo "sdk.dir=$ANDROID_SDK_ROOT" > "$PROJECT_ROOT/local.properties"
 
       # 4) Gradle 설치(시스템) — wrapper 없이도 동작
