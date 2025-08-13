@@ -151,13 +151,31 @@ jobs:
           chmod +x ./gradlew
 
       # 6) 빌드
-      - name: Build Release APK (with wrapper)
+      - name: Build (diagnose Kotlin first)
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
           set -e
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace --warning-mode all --info || \
-          (echo "Retry once..." && ./gradlew :app:assembleRelease --no-daemon --stacktrace --info)
+          # 1) Kotlin 컴파일만 먼저 돌려서 원인 노출
+          ./gradlew :app:compileReleaseKotlin --no-daemon --stacktrace --warning-mode all --info \
+            | tee kotlin_compile.log || true
+
+          echo "----- FIRST 120 LINES WITH 'e: ' FROM KOTLIN COMPILER -----" | tee -a kotlin_compile_summary.txt
+          grep -n "^[[:space:]]*e: " -n kotlin_compile.log | head -n 120 | tee -a kotlin_compile_summary.txt || true
+
+          # 2) 이어서 APK 빌드 시도(리트라이 포함)
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace --warning-mode all --info \
+            | tee gradle_build.log || \
+          (echo "Retry once..." && ./gradlew :app:assembleRelease --no-daemon --stacktrace --info | tee -a gradle_build.log)
+
+      - name: Upload build logs (for debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ env.PROJECT_ROOT }}/kotlin_compile.log
+            ${{ env.PROJECT_ROOT }}/kotlin_compile_summary.txt
+            ${{ env.PROJECT_ROOT }}/gradle_build.log
 
       - name: Locate APK
         id: apk
@@ -169,18 +187,6 @@ jobs:
           if [ -z "$FILE" ]; then echo "No APK found"; exit 1; fi
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "APK: $FILE"
-
-      - name: Compute SHA256 (Base64)
-        id: sha
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          SHA=$(sha256sum "${{ steps.apk.outputs.file }}" | awk '{print $1}')
-          B64=$(python3 -c "import sys,base64,binascii; print(base64.b64encode(binascii.unhexlify(sys.argv[1])).decode(), end='')" "$SHA")
-          printf "%s" "$B64" > apk.sha256.b64
-          echo "sha256_b64=$B64" >> "$GITHUB_OUTPUT"
-          echo "SHA256(Base64): $B64"
-
 
       # 9) 아티팩트 업로드
       - name: Upload artifact
