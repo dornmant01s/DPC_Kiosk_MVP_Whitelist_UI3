@@ -149,7 +149,258 @@ jobs:
           sdk install gradle 8.7 >/dev/null
           gradle wrapper --gradle-version 8.7 --distribution-type bin
           chmod +x ./gradlew
+      - name: Patch sources (safe Kotlin)
+        shell: bash
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          mkdir -p app/src/main/java/app/dpc/kiosk/util
+          mkdir -p app/src/main/java/app/dpc/kiosk/ui
 
+          # Prefs.kt — 확장함수/복잡 로직 제거, 표준 joinToString만 사용
+          cat > app/src/main/java/app/dpc/kiosk/util/Prefs.kt <<'EOF'
+          package app.dpc.kiosk.util
+
+          import android.content.Context
+
+          object Prefs {
+              private const val FILE = "kiosk_prefs"
+              private const val KEY_DOMAINS = "domains"
+              private const val KEY_PACKAGES = "packages"
+              private const val KEY_PIN = "pin"
+
+              fun getDomains(ctx: Context): List<String> =
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                      .getString(KEY_DOMAINS, "google.com")!!
+                      .split(",")
+                      .map { it.trim() }
+                      .filter { it.isNotEmpty() }
+
+              fun setDomains(ctx: Context, list: List<String>) {
+                  val joined = list.map { it.trim() }.filter { it.isNotEmpty() }.joinToString(",")
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                      .edit().putString(KEY_DOMAINS, joined).apply()
+              }
+
+              fun getPackages(ctx: Context): List<String> =
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                      .getString(KEY_PACKAGES, "com.android.chrome")!!
+                      .split("\n")
+                      .map { it.trim() }
+                      .filter { it.isNotEmpty() }
+
+              fun setPackages(ctx: Context, list: List<String>) {
+                  val joined = list.map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                      .edit().putString(KEY_PACKAGES, joined).apply()
+              }
+
+              fun getPin(ctx: Context): String =
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                      .getString(KEY_PIN, "1234")!!
+
+              fun setPin(ctx: Context, pin: String) {
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                      .edit().putString(KEY_PIN, pin).apply()
+              }
+          }
+          EOF
+
+          # LauncherActivity.kt — 심플 리스트/실행만
+          cat > app/src/main/java/app/dpc/kiosk/ui/LauncherActivity.kt <<'EOF'
+          package app.dpc.kiosk.ui
+
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Bundle
+          import android.view.LayoutInflater
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.Button
+          import android.widget.TextView
+          import androidx.activity.ComponentActivity
+          import androidx.recyclerview.widget.LinearLayoutManager
+          import androidx.recyclerview.widget.RecyclerView
+          import app.dpc.kiosk.R
+          import app.dpc.kiosk.util.Prefs
+
+          class LauncherActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_launcher)
+
+                  val rv = findViewById<RecyclerView>(R.id.appList)
+                  rv.layoutManager = LinearLayoutManager(this)
+
+                  val pkgs = Prefs.getPackages(this)
+                  val entries = pkgs.mapNotNull { pkg ->
+                      try {
+                          val ai = packageManager.getApplicationInfo(pkg, 0)
+                          val label = packageManager.getApplicationLabel(ai).toString()
+                          AppEntry(label, pkg)
+                      } catch (_: PackageManager.NameNotFoundException) {
+                          null
+                      }
+                  }
+                  rv.adapter = AppAdapter(entries) { pkg ->
+                      packageManager.getLaunchIntentForPackage(pkg)?.let { startActivity(it) }
+                  }
+
+                  findViewById<Button>(R.id.btnOpenWeb).setOnClickListener {
+                      startActivity(Intent(this, KioskWebActivity::class.java))
+                  }
+                  findViewById<Button>(R.id.btnAdmin).setOnClickListener {
+                      startActivity(Intent(this, AdminPinActivity::class.java))
+                  }
+              }
+          }
+
+          data class AppEntry(val label: String, val pkg: String)
+
+          class AppAdapter(
+              private val items: List<AppEntry>,
+              private val onClick: (String) -> Unit
+          ) : RecyclerView.Adapter<AppVH>() {
+              override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): AppVH {
+                  val v = LayoutInflater.from(parent.context)
+                      .inflate(android.R.layout.simple_list_item_2, parent, false)
+                  return AppVH(v)
+              }
+              override fun getItemCount() = items.size
+              override fun onBindViewHolder(holder: AppVH, position: Int) {
+                  val it = items[position]
+                  holder.t1.text = it.label
+                  holder.t2.text = it.pkg
+                  holder.itemView.setOnClickListener { _ -> onClick(it.pkg) }
+              }
+          }
+
+          class AppVH(v: View) : RecyclerView.ViewHolder(v) {
+              val t1: TextView = v.findViewById(android.R.id.text1)
+              val t2: TextView = v.findViewById(android.R.id.text2)
+          }
+          EOF
+
+          # AdminPinActivity.kt — PIN 확인
+          cat > app/src/main/java/app/dpc/kiosk/ui/AdminPinActivity.kt <<'EOF'
+          package app.dpc.kiosk.ui
+
+          import android.content.Intent
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import app.dpc.kiosk.R
+          import app.dpc.kiosk.util.Prefs
+
+          class AdminPinActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_admin_pin)
+
+                  val et = findViewById<EditText>(R.id.etPin)
+                  findViewById<Button>(R.id.btnOk).setOnClickListener {
+                      if (et.text.toString() == Prefs.getPin(this)) {
+                          startActivity(Intent(this, SettingsActivity::class.java))
+                          finish()
+                      } else {
+                          Toast.makeText(this, "PIN 불일치", Toast.LENGTH_SHORT).show()
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # SettingsActivity.kt — 허용목록 편집
+          cat > app/src/main/java/app/dpc/kiosk/ui/SettingsActivity.kt <<'EOF'
+          package app.dpc.kiosk.ui
+
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import app.dpc.kiosk.R
+          import app.dpc.kiosk.util.Prefs
+
+          class SettingsActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_settings)
+
+                  val etDomains = findViewById<EditText>(R.id.etDomains)
+                  val etPackages = findViewById<EditText>(R.id.etPackages)
+
+                  etDomains.setText(Prefs.getDomains(this).joinToString(", "))
+                  etPackages.setText(Prefs.getPackages(this).joinToString("\n"))
+
+                  findViewById<Button>(R.id.btnSaveDomains).setOnClickListener {
+                      val list = etDomains.text.toString().split(",")
+                          .map { it.trim() }
+                          .filter { it.isNotEmpty() }
+                      Prefs.setDomains(this, list)
+                      Toast.makeText(this, "도메인 저장됨", Toast.LENGTH_SHORT).show()
+                  }
+
+                  findViewById<Button>(R.id.btnSavePackages).setOnClickListener {
+                      val list = etPackages.text.toString().split("\n")
+                          .map { it.trim() }
+                          .filter { it.isNotEmpty() }
+                      Prefs.setPackages(this, list)
+                      Toast.makeText(this, "앱 저장됨", Toast.LENGTH_SHORT).show()
+                  }
+              }
+          }
+          EOF
+
+          # KioskWebActivity.kt — 호스트 매칭 간단/명확화
+          cat > app/src/main/java/app/dpc/kiosk/ui/KioskWebActivity.kt <<'EOF'
+          package app.dpc.kiosk.ui
+
+          import android.os.Bundle
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import app.dpc.kiosk.R
+          import app.dpc.kiosk.util.Prefs
+
+          class KioskWebActivity : ComponentActivity() {
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_kiosk_web)
+
+                  val allowlist = Prefs.getDomains(this)
+
+                  val web = findViewById<WebView>(R.id.web)
+                  web.settings.javaScriptEnabled = true
+                  web.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                          val host = request?.url?.host ?: return true
+                          val ok = allowlist.any { pattern -> matches(host, pattern) }
+                          return if (ok) false else {
+                              Toast.makeText(this@KioskWebActivity, "Blocked: $host", Toast.LENGTH_SHORT).show()
+                              true
+                          }
+                      }
+                  }
+                  web.loadUrl("https://www.google.com/")
+              }
+
+              private fun matches(host: String, pattern: String): Boolean {
+                  val p = pattern.trim()
+                  if (p.isEmpty()) return false
+                  return if (p.startsWith("*.")) {
+                      val root = p.removePrefix("*.") // ex) example.com
+                      host == root || host.endsWith(".$root")
+                  } else {
+                      host == p || host.endsWith(".$p")
+                  }
+              }
+          }
+          EOF
       # 6) 빌드
       - name: Build (diagnose Kotlin first)
         working-directory: ${{ env.PROJECT_ROOT }}
