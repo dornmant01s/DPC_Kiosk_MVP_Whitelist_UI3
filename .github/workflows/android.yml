@@ -438,7 +438,21 @@ jobs:
           if [ -z "$FILE" ]; then echo "No APK found"; exit 1; fi
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "APK: $FILE"
+      - name: Compute SHA256 (Base64) from APK
+        id: sha
+        working-directory: ${{ env.PROJECT_ROOT }}
+        shell: bash
+        run: |
+          SHA=$(sha256sum "${{ steps.apk.outputs.file }}" | awk '{print $1}')
+          B64=$(python3 -c "import sys,base64,binascii; print(base64.b64encode(binascii.unhexlify(sys.argv[1])).decode(), end='')" "$SHA")
+          printf "%s" "$B64" > apk.sha256.b64
+          echo "sha256_b64=$B64" >> "$GITHUB_OUTPUT"
 
+      - name: Upload checksum & show in summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-sha256-b64
+          path: ${{ env.PROJECT_ROOT }}/apk.sha256.b64
       # 9) 아티팩트 업로드
       - name: Upload artifact
         uses: actions/upload-artifact@v4
