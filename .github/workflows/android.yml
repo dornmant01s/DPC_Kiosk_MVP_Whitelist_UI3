@@ -75,11 +75,7 @@ jobs:
         shell: bash
         run: |
           SHA=$(sha256sum "${{ steps.apk.outputs.file }}" | awk '{print $1}')
-          B64=$(python3 - <<PY
-import sys, binascii, base64
-print(base64.b64encode(binascii.unhexlify(sys.argv[1])).decode(), end="")
-PY
-"$SHA")
+          B64=$(python3 -c "import sys,base64,binascii; print(base64.b64encode(binascii.unhexlify(sys.argv[1])).decode(), end='')" "$SHA")
           printf "%s" "$B64" > apk.sha256.b64
           echo "sha256_b64=$B64" >> "$GITHUB_OUTPUT"
           echo "SHA256(Base64): $B64"
